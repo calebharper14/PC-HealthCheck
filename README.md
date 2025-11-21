@@ -1,12 +1,13 @@
 <div align="center">
-  <h1>PC-HealthCheck</h1>
-  <p>
-    <img alt="PowerShell" src="https://img.shields.io/badge/PowerShell-%23007ACC.svg?logo=powershell&logoColor=white">
-    <img alt="License" src="https://img.shields.io/github/license/calebharper14/PC-HealthCheck">
-    <a href="https://github.com/calebharper14/PC-HealthCheck">
-      <img alt="Repository" src="https://img.shields.io/badge/Repo-PC--HealthCheck-blue?logo=github">
-    </a>
-  </p>
+
+# PC-HealthCheck
+
+---
+
+![PowerShell](https://img.shields.io/badge/PowerShell-%23007ACC.svg?logo=powershell&logoColor=white)
+![License](https://img.shields.io/github/license/calebharper14/PC-HealthCheck)
+[![Repository](https://img.shields.io/badge/Repo-PC--HealthCheck-blue?logo=github)](https://github.com/calebharper14/PC-HealthCheck)
+
 </div>
 
 
