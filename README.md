@@ -2,232 +2,205 @@
 
 # PC-HealthCheck
 
----
-
-![PowerShell](https://img.shields.io/badge/PowerShell-%23007ACC.svg?logo=powershell&logoColor=white)
+![Built With PowerShell](https://img.shields.io/badge/Built%20With-PowerShell-007ACC?logo=powershell&logoColor=white)
 ![License](https://img.shields.io/github/license/calebharper14/PC-HealthCheck)
 [![Repository](https://img.shields.io/badge/Repo-PC--HealthCheck-blue?logo=github)](https://github.com/calebharper14/PC-HealthCheck)
 
 </div>
 
-
-Inclusive, technician-friendly Windows health assessment and light optimization PowerShell script.
-
-- Designed for laptops and desktops (currently verified on Windows 10 Pro; broader Windows 10/11 testing ongoing)
-- Fast snapshot (~6s, multi-sample averages)
-- Clear health tiers: Good | Medium | Critical | Unknown
-- Safe defaults (scan-only); optional, reversible improvements require explicit flags
+> An inclusive Windows health assessment and optimization script that delivers fast, reliable insights.
+> Built for support environments, providing technicians with rapid visibility and clear, guided outputs.
 
 ---
 
-## Overview
+## 1. Overview
 
-- Collects system identity, hardware, and key performance counters (CPU, Memory, Disk, Boot, Events, Network)
-- Computes per-component health + Overall health (skipped/missing metrics don’t penalize health)
-- Produces compact and full reports (CSV + TXT)
-- Optional actions (repairs/cleanups/startup hygiene/power plan/toggles) are opt-in and reversible
+PC-HealthCheck gives you:
+- A fast baseline (default ≈6s) or a sustained sample (30–60s) of core performance signals.
+- Plain-language health tiers: **Good / Medium / Critical / Unknown**.
+- Reversible tuning (startup hygiene, power plan, GPU scheduling, Game Bar capture).
+- Safe-by-default: nothing changes unless flags are provided.
+- Clear logs + CSVs you can ingest or hand to another technician.
 
-## Modes
-| Mode | Description | System Changes |
-|---|---|---|
-| Scan‑Only (default) | Diagnostics and reporting only | None |
-| Optimization | Safe, reversible improvements when flags are passed | Yes (scoped) |
-| DeepClean | Heavier, always‑prompted cleanup steps | Yes (confirmed) |
-
----
-
-## Parameters
-
-| Parameter | Purpose |
-|---|---|
-| `-AutoElevate` | Relaunch elevated if not admin (needed for repairs/cleanups). |
-| `-QuietSkipAdmin` | Suppress verbose “skipped (no admin)” messages. |
-| <code>-PowerMode &lt;Balanced&#124;High&gt;</code> | Apply Balanced (default) or High Performance for the run. |
-| `-KeepNewPowerPlan` | Do not restore the original power plan at the end. |
-| `-ApplyStartupOptimization` | Audit startup entries; offer to disable non‑critical items (reversible). |
-| `-ForceStartupOptimization` | Disable eligible startup items without prompts. |
-| `-DeepClean` | Enable prompt‑gated deep cleanup steps. |
-| `-DeepCleanAutoYes` | Auto‑confirm each Deep Clean prompt. |
-| `-EnableHAGS` / `-DisableHAGS` | Toggle Hardware‑Accelerated GPU Scheduling (mutually exclusive). |
-| `-DisableGameBarCapture` / `-EnableGameBarCapture` | Toggle Xbox Game Bar background capture (mutually exclusive). |
-
-Notes
-- Conflicting enable/disable pairs are ignored with a clear log entry.
-- HAGS may lower performance on some GPUs; prefer High Performance without HAGS if unsure.
+<p align="center">
+  <b>Scan first. Decide. Then (optionally) remediate—always reversible.</b>
+</p>
 
 ---
 
-## Outputs
+## 2. Why It Exists
 
-| File | Description |
-|---|---|
-| `PC-Health-Report-<PC>-<ts>.csv` | Full dataset (for analysis/ingestion). |
-| `PC-Health-Report-Compact-<PC>-<ts>.csv` | Essentials grouped by section. |
-| `PC-Health-Full-<PC>-<ts>.txt` | Detailed log, inventories, top processes, event details. |
-| `PC-Health-Compact-<PC>-<ts>.txt` | One‑page summary with units. |
-| `Run-As-Admin-Todo-<PC>-<ts>.txt` | Elevation-required commands (created only if non‑admin). |
+Most “PC tune-up” scripts:
+- Hide what they did,
+- Use arbitrary thresholds,
+- Or over-correct without context.
 
-Compact CSV columns (grouped): Identity | CPU | Memory | Disk | Boot | Events | Network | Toggles/Actions | Overall
-
----
-
-## Collected Metrics Summary
-
-| Category | Metrics (technical) |
-|---|---|
-| Identity | PC name, user, OS edition/arch, build, uptime |
-| CPU | Usage %, ready queue (threads), current/base GHz, % of base, temperature (ACPI, best‑effort) |
-| Memory | % committed, Available MB, Page Reads/sec (hard faults), total RAM GB |
-| Disk (perf) | % busy, avg queue length, read/write MB/s (LogicalDisk fallback), free GB |
-| Storage health | PhysicalDisk.HealthStatus; reliability counters (wear/temp/read+write errors); SMART predict; Win32_DiskDrive.Status |
-| Boot | Avg boot and post‑boot seconds (Event ID 100, last 7 days, up to 10 samples) |
-| Events | System Critical/Error count in last 72h (+ top 5 appended to full log) |
-| Network | Active adapter: IP, gateway, DNS |
-| Top processes | Delta CPU seconds and IO bytes over snapshot window |
-| Power/toggles | Applied power plan; HAGS state; Game Bar capture state |
-| Actions | DISM/SFC results; cleanup actions taken |
-| Skipped/unavailable | Explicit list (counters/sensors not present or no admin) |
-
-Skipped or missing metrics are listed; they do not reduce Overall health.
+This script:
+- Shows the exact numbers that drive each health decision.
+- Makes “skipped” vs “unavailable” explicit.
+- Lets you ratchet sensitivity by extending the sampling window (sustained vs burst).
 
 ---
 
-## Health Thresholds
+## 3. Quick Run vs Sustained Run
 
-| Metric | Medium | Critical |
-|---|---:|---:|
-| CPU usage (%) | ≥ 90 | ≥ 95 |
-| CPU backlog (threads) | > 1.5 × logical cores | > 3 × logical cores |
-| Memory commit (%) | ≥ 90 | ≥ 98 |
-| Memory hard faults/sec | > 200 | > 1000 |
-| Disk busy (%) | ≥ 90 | ≥ 95 |
-| Disk queue length | > 2 | > 5 |
-| Boot time (s) | ≤ 75 (else Critical) | > 75 |
-| CPU temp (°C) | — | > 85 |
-| SMART | Warning → Medium | Unhealthy/Predicted failure → Critical |
+| Mode | When to Use | Command |
+|------|-------------|---------|
+| Burst (default ~6s) | Quick triage / ticket response | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1` |
+| Sustained (30s) | Verify CPU/memory pressure isn’t a spike | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -ExtendedPerf` |
+| Custom window (e.g., 60s) | Heavier validation for chronic slowness | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -PerfSampleSeconds 60` |
 
-Notes
-- Memory health is multi‑factor (commit %, available ratio, faults/sec).
-- Thresholds are pragmatic defaults and adjustable near the top of the script.
-- Future: `-ThresholdProfile <Enterprise|Gaming|LegacyHDD>` to swap preset bundles.
+Tip: Use sustained mode before escalating “high CPU” or “memory exhaustion” issues.
 
 ---
 
-## Optional Actions
+## 4. What It Collects
 
-| Action | Flags | Reversible | Notes |
-|---|---|---|---|
-| Startup Optimization | `-ApplyStartupOptimization` (`-ForceStartupOptimization`) | Yes (Run_DISABLED key or `.disabled` rename) | Targets Updater/Telemetry/Misc only. |
-| Deep Clean | `-DeepClean` (+ `-DeepCleanAutoYes`) | Partially (caches regenerate) | Prompts per step unless auto‑yes. |
-| HAGS toggle | `-EnableHAGS` / `-DisableHAGS` | Yes | Enable only on supported GPUs; when unsure, disable. |
-| Game Bar capture | `-DisableGameBarCapture` / `-EnableGameBarCapture` | Yes | Avoid DVR background overhead. |
-| Power plan | `-PowerMode <Balanced|High>` | Yes (auto‑restore unless `-KeepNewPowerPlan`) | Captures and restores original GUID by default. |
-| Repairs | (no extra flag) | N/A | DISM /RestoreHealth and SFC /scannow (admin). |
-| Cleanups | (implicit) | N/A | Temp, DNS flush, Winsock reset, Storage Sense toggle, TCP tweaks. |
-| TRIM | (implicit) | N/A | Safe for SSD/NVMe; skipped if unsupported. |
-| WU cache cleanup | (implicit) | Auto re‑populate | Admin only. |
+**Identity & Hardware**  
+Manufacturer / Model / Product string, OS caption/build/arch, uptime, CPU, memory modules, disks, GPU.
 
----
+**Performance Snapshot**  
+CPU usage & backlog (threads waiting), memory commit %, available MB, hard faults/sec, disk busy %, queue length, read/write throughput, optional sustained evaluation.
 
-## Performance Expectations
+**Reliability & Health**  
+Storage health (PhysicalDisk + reliability counters + SMART fallback), boot average (Event ID 100), recent System critical/error events (72h), CPU temperature (best-effort).
 
-| Operation | Typical time |
-|---|---|
-| Health scan | 5–10 s |
-| Startup Optimization | Instant – 30 s |
-| Deep Clean (auto‑yes) | 2–8 min |
-| Windows Update cache cleanup | 2–10 min |
-| DISM /RestoreHealth | 5–25 min |
-| SFC /scannow | 5–15 min |
+**Hygiene & Activity**  
+Top differential processes (CPU seconds & IO bytes), startup entries classification, power plan state, toggles (HAGS, Game Bar capture).
+
+**Outputs**  
+Full & Compact CSV, full execution log, compact executive summary, admin follow-up (if run non-elevated).
 
 ---
 
-## Compatibility and Prerequisites
+## 5. Health Scoring
 
-Status: Verified on most Windows 10 Editions; broader Windows 10/11 testing pending.
+Each component produces a tier independently; overall health is the “worst” tier among CPU, Memory, Disk (performance + SMART), Events, Boot.
 
-Requirements
-- Healthy performance counters (if broken: `lodctr /r`, reboot)
-- Throughput counters on older systems may require `diskperf -y` (reboot)
-- Admin rights needed for: DISM, SFC, power plan changes, TRIM, WU cache cleanup
+Threshold set (optimized):
+- CPU usage: Medium ≥85% (only counts as Medium/Critical when sustained over the chosen window); Critical ≥95%.
+- CPU backlog: Medium > 1× logical cores; Critical > 2.5×.
+- Memory commit: Medium ≥85%; Critical ≥95%.
+- Memory hard faults/sec: Medium >100; Critical >500.
+- Disk busy: Medium ≥85%; Critical ≥95%.
+- Disk queue length: Medium >2; Critical >5.
+- Boot time avg: >45s → Medium; >75s → Critical.
+- CPU temp: >80°C → Medium; >90°C → Critical.
+- SMART: Warning → Medium; PredictFailure/Unhealthy → Critical.
+- Missing sensor/counter: Neutral (Unknown).
 
----
-
-## Security Notes
-
-- Uses only built‑in Windows/PowerShell; no external downloads or network calls
-- No telemetry or remote storage; all output is local
-- `ExecutionPolicy Bypass` is used only to launch the local script
-
----
-
-## Usage Examples
-
-| Scenario | Command |
-|---|---|
-| Standard scan (Balanced) | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1` |
-| Startup optimization (prompted) | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -AutoElevate -ApplyStartupOptimization` |
-| Deep Clean (auto‑confirm) | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -AutoElevate -DeepClean -DeepCleanAutoYes` |
-| High performance without HAGS (safer default) | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -PowerMode High -DisableHAGS` |
-| High performance including HAGS (keep plan) | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -PowerMode High -KeepNewPowerPlan -EnableHAGS -DisableGameBarCapture` |
-| Quiet non‑admin scan | `powershell -ExecutionPolicy Bypass -File .\PC-HealthCheck.ps1 -QuietSkipAdmin` |
+Sustained sampling (≥30s) reduces false positives by averaging time rather than a short burst. If you only run burst mode and see a single high metric—re-run sustained before intervening.
 
 ---
 
-## Troubleshooting
+## 6. Parameters
 
-| Symptom | Resolution |
-|---|---|
-| Many metrics “N/A” | Run `lodctr /r`, reboot; check “Performance Logs & Alerts” service. |
-| Missing disk throughput | Run `diskperf -y`, reboot; LogicalDisk fallback is used when available. |
-| No boot metrics | Enable Diagnostics‑Performance Operational log; reboot twice. |
-| CPU temp unavailable | Sensor may be unexposed; use OEM utility to confirm. |
-| SMART Medium/Critical | Verify with vendor tool; schedule backup/replacement. |
-| DISM/SFC slow | Expected; allow to complete. |
-| Permissions skipped | Run elevated or pass `-AutoElevate`. |
+```
+-AutoElevate              Try to relaunch as admin (needed for repairs / deeper clean).
+-QuietSkipAdmin           Hide verbose admin-skipped lines.
+-PowerMode <Balanced|High>  Temporarily apply power plan (restored unless -KeepNewPowerPlan).
+-KeepNewPowerPlan         Do not restore original plan.
+-ApplyStartupOptimization Audit + optionally disable non-critical startup items.
+-ForceStartupOptimization Disable candidates without prompting.
+-DeepClean                Offer heavier (prompted) cleanup steps.
+-DeepCleanAutoYes         Auto-confirm each Deep Clean prompt.
+-EnableHAGS / -DisableHAGS  Hardware Accelerated GPU Scheduling toggle.
+-DisableGameBarCapture / -EnableGameBarCapture  Xbox Game Bar background capture toggle.
+-ExtendedPerf             Use a 60s sustained sample window (unless -PerfSampleSeconds given).
+-PerfSampleSeconds <int>  Custom performance sampling duration (default 6).
+```
 
----
-
-## Glossary
-
-| Term | Definition |
-|---|---|
-| CPU backlog (ready threads) | Threads ready to run but waiting for CPU time; sustained high values = CPU saturation/scheduler delay. |
-| SMART | Firmware health attributes (prediction, errors, wear, temperature). |
-| Disk queue length | Outstanding IO requests; prolonged high levels indicate IO bottleneck. |
-| LogicalDisk vs PhysicalDisk | Volume‑level vs device‑level counters; LogicalDisk used as fallback. |
-| Post‑boot time | Settling time after boot for services/startup apps. |
-| Hard page faults/sec | Disk reads to satisfy non‑resident pages; persistent high rates can indicate memory pressure. |
-| % Committed | Portion of commit limit used (RAM + page file). |
+Conflicting enable/disable pairs cancel out with a log entry (no silent surprises).
 
 ---
 
-## Customizing Thresholds
+## 7. Example Scenarios
 
-- Edit variables near the top of the script (e.g., `$CPU_Usage_Medium_Thresh`, `$Disk_Queue_Medium_Thresh`).
-- Planned: `-ThresholdProfile` to quickly switch environment‑specific defaults.
-- Skipped/Unknown metrics remain neutral and do not degrade Overall health.
-
----
-
-## Reversibility Summary
-
-| Change | How to undo |
-|---|---|
-| Startup items | Restore from `Run_DISABLED` keys or rename `.disabled` files back. |
-| HAGS / Game Bar | Run the script with the opposite flag. |
-| Power plan | Auto‑restored unless `-KeepNewPowerPlan`; manual: `powercfg /setactive <GUID>`. |
-| Deep Clean | Removes caches/temp that naturally regenerate. |
-| Windows Update cache | Re-populates via Windows Update. |
-| TRIM | Safe; no reversal needed. |
-
----
-
-## License and Contributions
-
-- License: MIT (recommended; include a `LICENSE` file when publishing)
-- Contributions: PRs welcome (PowerShell 5.1 compatibility; safe defaults; reversible changes; update docs with new flags)
+Diagnose a slow boot:
+```
+.\PC-HealthCheck.ps1 -ExtendedPerf
+```
+Check high memory complaint with sustained sampling:
+```
+.\PC-HealthCheck.ps1 -PerfSampleSeconds 45
+```
+Run full hygiene + deep clean (cautious but automated):
+```
+.\PC-HealthCheck.ps1 -AutoElevate -ApplyStartupOptimization -DeepClean -DeepCleanAutoYes
+```
+Disable HAGS and enforce High Performance for a workstation:
+```
+.\PC-HealthCheck.ps1 -AutoElevate -PowerMode High -DisableHAGS -DisableGameBarCapture
+```
 
 ---
 
-Inclusive note: This project aims to be usable by a wide range of technicians. Output is compact, labeled with units, and backed by clear definitions. If any section is unclear, please open an issue with the confusing terms and environment details so we can improve accessibility and clarity in future revisions.
+## 8. Output Files
+
+Outputs land in a stable folder (default `C:\Scripts\PCHealthCheckScript`):
+- `PC-Health-Report-<PC>-<timestamp>.csv` (full; feed into BI or trend store)
+- `PC-Health-Report-Compact-<PC>-<timestamp>.csv` (executive signal density)
+- `PC-Health-Full-<PC>-<timestamp>.txt` (everything: inventory, events, process deltas)
+- `PC-Health-Compact-<PC>-<timestamp>.txt` (one-page summary for ticket attachment)
+- `Run-As-Admin-Todo-<PC>-<timestamp>.txt` (actionable follow-ups for non-admin runs)
+
+Use the compact CSV to populate dashboards; full CSV for historical baselines; text logs for ticket evidence.
+
+---
+
+## 9. Security Notes / Remediation Philosophy
+
+- Nothing destructive without a prompt (or an explicit “auto” flag).
+- Startup changes reversible (keys moved or files renamed `.disabled`).
+- Power plan restored unless you say otherwise.
+- Deep clean favors reclaiming space & clearing stale caches—never registry “tweaks” for placebo.
+
+---
+
+## 10. Extending / Integrating
+
+Want more?
+- JSON export (planned).
+- Profiles (`-ThresholdProfile Gaming | Enterprise | LegacyHDD`)—roadmap.
+- GPU temperature (requires vendor APIs; longer-term).
+- RMM packaging: Wrap this with Intune / Chocolatey / WinGet for fleet rollout.
+
+Raise an issue if your environment needs a variant (e.g., VDI nuance or server-specific counters).
+
+---
+
+## 11. Troubleshooting Cheatsheet
+
+| Symptom | Fix |
+|---------|-----|
+| Many metrics “N/A” | `lodctr /r`, reboot; ensure performance counters service OK. |
+| Throughput missing | `diskperf -y`, reboot. |
+| Boot samples empty | Enable Diagnostics-Performance log; get 2 fresh boots. |
+| CPU temp “Unavailable” | Consumer board doesn’t expose ACPI zone; confirm via OEM tool. |
+| SMART Medium/Critical | Validate with vendor tool, plan backup/replacement. |
+| Repairs slow | Normal—don’t abort DISM/SFC mid-run. |
+| Persistent high CPU (burst only) | Re-run sustained (`-ExtendedPerf`) before escalating. |
+
+---
+
+## 12. Contribute
+
+Pull requests welcome:
+- Keep PowerShell 5.1 compatibility.
+- Every new flag must note reversibility.
+- Update README if you touch thresholds or behavior.
+- Accessibility: Aim for plain language—junior techs should not need a glossary.
+
+---
+
+## 13. License
+
+[MIT License](LICENSE) Use freely. Attribution appreciated but not required.
+
+---
+
+### Final Note
+
+If a number looks scary, re-run with sustained sampling. Burst samples can catch a momentary spike; sustained windows tell the real story.
+
+Need an HTML dashboard, JSON output, or threshold profile pack? Open an issue and describe your environment—happy to iterate.
