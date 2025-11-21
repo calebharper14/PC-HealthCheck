@@ -1,4 +1,4 @@
-<div align="center">
+<p align="center">
 
 # PC-HealthCheck
 
@@ -8,7 +8,8 @@
 ![License](https://img.shields.io/github/license/calebharper14/PC-HealthCheck)
 [![Repository](https://img.shields.io/badge/Repo-PC--HealthCheck-blue?logo=github)](https://github.com/calebharper14/PC-HealthCheck)
 
-</div>
+</p>
+
 
 Inclusive, technician-friendly Windows health assessment and light optimization PowerShell script.
 
