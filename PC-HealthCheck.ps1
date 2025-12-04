@@ -36,8 +36,6 @@ Sustained classification:
 
 #>
 
-$ScriptVersion = '1.3'
-
 #Requires -Version 5.1
 
 param(
@@ -65,6 +63,8 @@ param(
     
     [switch]$ShowHelp
 )
+
+$ScriptVersion = '1.3'
 
 # ---------------------------
 # CONFIG / THRESHOLDS
@@ -725,7 +725,16 @@ $BootDiagDetails = @()
 
 # Helper function to safely parse boot event properties
 function Get-BootTimeFromEvent {
-    param($Event)
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Event
+    )
+    
+    if ($null -eq $Event) {
+        return $null
+    }
+    
     $result = [PSCustomObject]@{
         BootTimeSeconds = $null
         PostBootSeconds = $null
@@ -1659,7 +1668,7 @@ Write-Host " CPU" -ForegroundColor DarkGray
 PrintRow "Model"         $ReportObj.CPU_Model $CPUHealth
 PrintRow "Usage Avg (%)" (SafeVal $ReportObj.CPU_Usage_Avg_Pct) $CPUHealth
 PrintRow "Usage Peak (%)"(SafeVal $ReportObj.CPU_Usage_Peak_Pct) $CPUHealth
-PrintRow "Backlog Avg"   (SafeVal $ReportObj.CPU_Backlog_Threads) $CPUHealth
+PrintRow "Backlog Avg"   (SafeVal $ReportObj.CPU_Backlog_Avg) $CPUHealth
 PrintRow "Current GHz"   (SafeVal $ReportObj.CPU_Current_GHz) $CPUHealth
 PrintRow "Base GHz"      (SafeVal $ReportObj.CPU_Base_GHz)
 PrintRow "Temp (C)"      (SafeVal $ReportObj.CPU_Temp_C) $CPU_Temp_Health
