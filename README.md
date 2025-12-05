@@ -21,10 +21,37 @@ PC-HealthCheck gives you:
 - Reversible tuning (startup hygiene, power plan, GPU scheduling, Game Bar capture).
 - Safe-by-default: nothing changes unless flags are provided.
 - Clear logs + CSVs you can ingest or hand to another technician.
+- Universal PowerShell compatibility (5.1–7.x) with automatic feature detection.
+- Professional progress indicators for clarity during longer operations.
+- Interactive help menu with actionable recommendations based on detected issues.
 
 <p align="center">
   <b>Scan first. Decide. Then (optionally) remediate—always reversible.</b>
 </p>
+
+---
+
+## What's New in Version 1.3
+
+**Enhanced Reliability**
+- Fixed storage SMART property validation errors on diverse hardware
+- Multi-method boot time detection with automatic fallbacks
+- Universal PowerShell 5.1–7.x compatibility
+
+**Better User Experience**
+- Professional progress indicators during performance sampling
+- Interactive help menu after collection with health-specific recommendations
+- Clearer status messages and error reporting
+
+**Improved Diagnostics**
+- Startup program impact analysis (Low/Medium/High ratings)
+- Boot performance diagnostics with program categorization
+- Enhanced detection for security software, cloud sync, and GPU utilities
+
+**Broader Compatibility**
+- Windows 10 (1809+) and Windows 11 version detection
+- Feature gating based on OS capabilities
+- Graceful handling of missing cmdlets
 
 ---
 
@@ -63,7 +90,7 @@ Manufacturer / Model / Product string, OS caption/build/arch, uptime, CPU, memor
 CPU usage & backlog (threads waiting), memory commit %, available MB, hard faults/sec, disk busy %, queue length, read/write throughput, optional sustained evaluation.
 
 **Reliability & Health**  
-Storage health (PhysicalDisk + reliability counters + SMART fallback), boot average (Event ID 100), recent System critical/error events (72h), CPU temperature (best-effort).
+Storage health (PhysicalDisk + reliability counters + SMART fallback), boot average (Event ID 100 with multi-method detection and fallback mechanisms), startup program impact analysis, recent System critical/error events (72h), CPU temperature (best-effort).
 
 **Hygiene & Activity**  
 Top differential processes (CPU seconds & IO bytes), startup entries classification, power plan state, toggles (HAGS, Game Bar capture).
@@ -116,9 +143,10 @@ Conflicting enable/disable pairs cancel out with a log entry (no silent surprise
 
 ## 7. Example Scenarios
 
-Diagnose a slow boot:
-```
+Diagnose slow startup with detailed program analysis:
+```powershell
 .\PC-HealthCheck.ps1 -ExtendedPerf
+# (Now includes startup program impact assessment with Low/Medium/High ratings)
 ```
 Check high memory complaint with sustained sampling:
 ```
@@ -175,9 +203,10 @@ Raise an issue if your environment needs a variant (e.g., VDI nuance or server-s
 |---------|-----|
 | Many metrics “N/A” | `lodctr /r`, reboot; ensure performance counters service OK. |
 | Throughput missing | `diskperf -y`, reboot. |
-| Boot samples empty | Enable Diagnostics-Performance log; get 2 fresh boots. |
+| Boot samples empty | Enable Diagnostics-Performance log; get 2 fresh boots. Script will attempt uptime-based fallback calculation if events unavailable. |
 | CPU temp “Unavailable” | Consumer board doesn’t expose ACPI zone; confirm via OEM tool. |
 | SMART Medium/Critical | Validate with vendor tool, plan backup/replacement. |
+| SMART property errors | Normal on older systems—script uses safe property validation and multiple fallback methods. |
 | Repairs slow | Normal—don’t abort DISM/SFC mid-run. |
 | Persistent high CPU (burst only) | Re-run sustained (`-ExtendedPerf`) before escalating. |
 
@@ -186,7 +215,7 @@ Raise an issue if your environment needs a variant (e.g., VDI nuance or server-s
 ## 12. Contribute
 
 Pull requests welcome:
-- Keep PowerShell 5.1 compatibility.
+- Keep PowerShell 5.1–7.x compatibility.
 - Every new flag must note reversibility.
 - Update README if you touch thresholds or behavior.
 - Accessibility: Aim for plain language—junior techs should not need a glossary.
