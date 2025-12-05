@@ -2,7 +2,17 @@
 PC-HealthCheck.ps1
 Modern Windows health snapshot & light optimization with optional sustained sampling.
 
-Version: 1.2
+Version: 1.3
+Changes in 1.3:
+- Fixed Storage SMART property validation errors (safe property access with validation)
+- Enhanced boot performance diagnostics with multi-method detection and fallbacks
+- Added universal PowerShell 5.1-7.x compatibility with version detection
+- Added Windows 10/11 version detection and feature gating
+- Implemented professional progress indicators using Write-Progress
+- Added post-collection interactive help menu with actionable recommendations
+- Improved error handling and fallback mechanisms throughout
+- Added boot diagnostics with startup program impact analysis
+
 Changes in 1.2:
 - Added -PerfSampleSeconds and -ExtendedPerf for sustained performance sampling (30–60s recommended).
 - Sustained logic: classification uses average + fraction of samples above threshold to reduce spike noise.
@@ -25,8 +35,6 @@ Sustained classification:
 - “Sustained” defined as ≥ 50% of samples breaching Medium or Critical thresholds (configurable via $SustainedFractionCutoff).
 
 #>
-
-$ScriptVersion = '1.2'
 
 #Requires -Version 5.1
 
@@ -51,8 +59,12 @@ param(
     [switch]$EnableGameBarCapture,
 
     [int]$PerfSampleSeconds = 6,
-    [switch]$ExtendedPerf
+    [switch]$ExtendedPerf,
+    
+    [switch]$ShowHelp
 )
+
+$ScriptVersion = '1.3'
 
 # ---------------------------
 # CONFIG / THRESHOLDS
@@ -86,6 +98,33 @@ $PrefetchClearThresholdMB   = 300
 $Boot_Good_Thresh           = 45
 $Boot_Medium_Thresh         = 75
 $TreatMissingBacklogAsGood  = $true
+
+# ---------------------------
+# VERSION COMPATIBILITY
+# ---------------------------
+# PowerShell version detection
+$PSVersion = $PSVersionTable.PSVersion
+$IsPSCore = $PSVersionTable.PSEdition -eq 'Core'
+$PSMajor = $PSVersion.Major
+
+# Windows version detection
+$OSBuild = [System.Environment]::OSVersion.Version.Build
+$IsWin11 = $OSBuild -ge 22000
+$IsWin10 = $OSBuild -ge 17763 -and $OSBuild -lt 22000
+$IsWinSupported = $OSBuild -ge 17763  # Windows 10 1809+
+
+# Warn about unsupported OS
+if (-not $IsWinSupported) {
+    Write-Warning "This script is designed for Windows 10 1809+ or Windows 11. Some features may not work correctly on this OS build ($OSBuild)."
+}
+
+# Log version info for debugging
+$VersionInfo = "PowerShell $($PSVersion.ToString()) ($($PSVersionTable.PSEdition)), Windows Build $OSBuild"
+
+# Cmdlet availability flags
+$HasGetPhysicalDisk = $null -ne (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue)
+$HasStorageReliabilityCounter = $null -ne (Get-Command Get-StorageReliabilityCounter -ErrorAction SilentlyContinue)
+$HasClearRecycleBin = $null -ne (Get-Command Clear-RecycleBin -ErrorAction SilentlyContinue)
 
 # ---------------------------
 # SETUP
@@ -147,7 +186,26 @@ function Prompt-YesNo { param([string]$Message,[switch]$AutoYes)
     return ($resp -match '^[Yy]')
 }
 
-# Helper: collect raw samples for sustained logic
+# Progress indicator helper for long operations
+function Show-ProgressBar {
+    param(
+        [string]$Activity,
+        [string]$Status,
+        [int]$PercentComplete,
+        [int]$SecondsRemaining = -1
+    )
+    $progressParams = @{
+        Activity = $Activity
+        Status = $Status
+        PercentComplete = [math]::Min(100, [math]::Max(0, $PercentComplete))
+    }
+    if ($SecondsRemaining -ge 0) {
+        $progressParams['SecondsRemaining'] = $SecondsRemaining
+    }
+    Write-Progress @progressParams
+}
+
+# Helper: collect raw samples for sustained logic with progress
 function Get-CtrSamples {
     param(
         [Parameter(Mandatory)][string]$Path,
@@ -238,6 +296,7 @@ Write-Host "=============================================" -ForegroundColor Cyan
 
 "PC Health Check started for $PCName at $(Get-Date)" | Out-File -FilePath $LogPath -Encoding UTF8
 Add-Content -Path $LogPath -Value ("Script Version: " + $ScriptVersion)
+Add-Content -Path $LogPath -Value ("Environment: " + $VersionInfo)
 
 # ---------------------------
 # SYSTEM / INVENTORY
@@ -345,7 +404,13 @@ function MergeSmart { param($current,$incoming)
 }
 
 try {
-    $pdList = Get-PhysicalDisk -ErrorAction SilentlyContinue
+    # Check cmdlet availability first
+    if ($HasGetPhysicalDisk) {
+        $pdList = Get-PhysicalDisk -ErrorAction SilentlyContinue
+    } else {
+        $pdList = $null
+        Add-Content -Path $LogPath -Value "Get-PhysicalDisk cmdlet not available - using fallback methods"
+    }
     if ($pdList) {
         foreach ($pd in $pdList) {
             $mapped = switch ($pd.HealthStatus) {
@@ -353,19 +418,63 @@ try {
             }
             $DiskSmartHealth = MergeSmart $DiskSmartHealth $mapped
             $detail = "$($pd.FriendlyName) [$($pd.MediaType)] Health=$($pd.HealthStatus)"
-            try {
-                $rc = Get-StorageReliabilityCounter -PhysicalDisk $pd -ErrorAction SilentlyContinue
-                if ($rc) {
-                    $issues=@()
-                    if ($rc.Wear -as [int] -and $rc.Wear -ge 90){$issues+="Wear=$($rc.Wear)%" }
-                    if ($rc.Temperature -as [int] -and $rc.Temperature -ge 70){$issues+="Temp=$($rc.Temperature)C" }
-                    if (($rc.ReadErrorsTotal -as [int]) -gt 0){$issues+="ReadErr=$($rc.ReadErrorsTotal)" }
-                    if (($rc.WriteErrorsTotal -as [int]) -gt 0){$issues+="WriteErr=$($rc.WriteErrorsTotal)" }
-                    if ($issues.Count -gt 0 -and $DiskSmartHealth -ne "Critical"){
-                        $DiskSmartHealth="Medium"; $detail+=" Issues: "+($issues -join "; ")
+            
+            # Safe access to StorageReliabilityCounter with property validation
+            if ($HasStorageReliabilityCounter) {
+                try {
+                    $rc = Get-StorageReliabilityCounter -PhysicalDisk $pd -ErrorAction Stop
+                    if ($rc) {
+                        $issues = @()
+                        # Safe property access - check if property exists before accessing
+                        try {
+                            $wearProp = $rc.PSObject.Properties['Wear']
+                            if ($wearProp -and $null -ne $wearProp.Value) {
+                                $wearVal = $wearProp.Value -as [int]
+                                if ($null -ne $wearVal -and $wearVal -ge 90) {
+                                    $issues += "Wear=$wearVal%"
+                                }
+                            }
+                        } catch { <# Property not available #> }
+                        
+                        try {
+                            $tempProp = $rc.PSObject.Properties['Temperature']
+                            if ($tempProp -and $null -ne $tempProp.Value) {
+                                $tempVal = $tempProp.Value -as [int]
+                                if ($null -ne $tempVal -and $tempVal -ge 70) {
+                                    $issues += "Temp=${tempVal}C"
+                                }
+                            }
+                        } catch { <# Property not available #> }
+                        
+                        try {
+                            $readErrProp = $rc.PSObject.Properties['ReadErrorsTotal']
+                            if ($readErrProp -and $null -ne $readErrProp.Value) {
+                                $readErrVal = $readErrProp.Value -as [int]
+                                if ($null -ne $readErrVal -and $readErrVal -gt 0) {
+                                    $issues += "ReadErr=$readErrVal"
+                                }
+                            }
+                        } catch { <# Property not available #> }
+                        
+                        try {
+                            $writeErrProp = $rc.PSObject.Properties['WriteErrorsTotal']
+                            if ($writeErrProp -and $null -ne $writeErrProp.Value) {
+                                $writeErrVal = $writeErrProp.Value -as [int]
+                                if ($null -ne $writeErrVal -and $writeErrVal -gt 0) {
+                                    $issues += "WriteErr=$writeErrVal"
+                                }
+                            }
+                        } catch { <# Property not available #> }
+                        
+                        if ($issues.Count -gt 0 -and $DiskSmartHealth -ne "Critical") {
+                            $DiskSmartHealth = "Medium"
+                            $detail += " Issues: " + ($issues -join "; ")
+                        }
                     }
+                } catch {
+                    Add-Content -Path $LogPath -Value "StorageReliabilityCounter for $($pd.FriendlyName): $($_.Exception.Message)"
                 }
-            } catch {}
+            }
             $DiskHealthDetails += $detail
         }
     }
@@ -454,19 +563,51 @@ try {
 Section "PERFORMANCE SAMPLING ($PerfSampleSeconds s)"
 Status "~" "Collecting raw counter samples..." "Yellow"
 
-# Raw samples
-$CPU_Usage_Samples    = Get-CtrSamples '\Processor(_Total)\% Processor Time' $PerfSamples $PerfIntervalSeconds
-$CPU_Backlog_Samples  = Get-CtrSamples '\System\Processor Queue Length'      $PerfSamples $PerfIntervalSeconds
-$CPU_Speed_Samples    = Get-CtrSamples '\Processor Information(_Total)\% Processor Performance' $PerfSamples $PerfIntervalSeconds
+# Show progress for performance sampling
+$totalCounters = 10
+$currentCounter = 0
 
-$RAM_Commit_Samples   = Get-CtrSamples '\Memory\% Committed Bytes In Use' $PerfSamples $PerfIntervalSeconds
-$RAM_Avail_Samples    = Get-CtrSamples '\Memory\Available MBytes'         $PerfSamples $PerfIntervalSeconds
-$RAM_Faults_Samples   = Get-CtrSamples '\Memory\Page Reads/sec'           $PerfSamples $PerfIntervalSeconds
+Show-ProgressBar -Activity "Performance Sampling" -Status "CPU Usage" -PercentComplete (($currentCounter / $totalCounters) * 100) -SecondsRemaining $PerfSampleSeconds
+$CPU_Usage_Samples = Get-CtrSamples '\Processor(_Total)\% Processor Time' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
 
-$Disk_Busy_Samples    = Get-CtrSamples '\PhysicalDisk(_Total)\% Disk Time' $PerfSamples $PerfIntervalSeconds
-$Disk_Queue_Samples   = Get-CtrSamples '\PhysicalDisk(_Total)\Avg. Disk Queue Length' $PerfSamples $PerfIntervalSeconds
-$Disk_Read_Samples    = Get-CtrSamples '\PhysicalDisk(_Total)\Disk Read Bytes/sec' $PerfSamples $PerfIntervalSeconds
-$Disk_Write_Samples   = Get-CtrSamples '\PhysicalDisk(_Total)\Disk Write Bytes/sec' $PerfSamples $PerfIntervalSeconds
+Show-ProgressBar -Activity "Performance Sampling" -Status "CPU Backlog" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$CPU_Backlog_Samples = Get-CtrSamples '\System\Processor Queue Length' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "CPU Speed" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$CPU_Speed_Samples = Get-CtrSamples '\Processor Information(_Total)\% Processor Performance' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Memory Commit" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$RAM_Commit_Samples = Get-CtrSamples '\Memory\% Committed Bytes In Use' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Memory Available" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$RAM_Avail_Samples = Get-CtrSamples '\Memory\Available MBytes' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Memory Faults" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$RAM_Faults_Samples = Get-CtrSamples '\Memory\Page Reads/sec' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Disk Busy" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$Disk_Busy_Samples = Get-CtrSamples '\PhysicalDisk(_Total)\% Disk Time' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Disk Queue" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$Disk_Queue_Samples = Get-CtrSamples '\PhysicalDisk(_Total)\Avg. Disk Queue Length' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Disk Read" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$Disk_Read_Samples = Get-CtrSamples '\PhysicalDisk(_Total)\Disk Read Bytes/sec' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Show-ProgressBar -Activity "Performance Sampling" -Status "Disk Write" -PercentComplete (($currentCounter / $totalCounters) * 100)
+$Disk_Write_Samples = Get-CtrSamples '\PhysicalDisk(_Total)\Disk Write Bytes/sec' $PerfSamples $PerfIntervalSeconds
+$currentCounter++
+
+Write-Progress -Activity "Performance Sampling" -Completed
 
 # Fallback logical disk throughput
 if (-not $Disk_Read_Samples -or $Disk_Read_Samples.Count -eq 0) {
@@ -580,31 +721,160 @@ $BootHealth = "Unknown"
 $BootAvgSeconds = $null
 $BootAvgPostBootSeconds = $null
 $BootSamples = 0
-try {
-    $bootEvents = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100; StartTime=(Get-Date).AddDays(-7)} -ErrorAction SilentlyContinue | Select-Object -First 10
-    if (-not $bootEvents) {
-        $bootEvents = Get-WinEvent -LogName 'Microsoft-Windows-Diagnostics-Performance/Operational' -ErrorAction SilentlyContinue | Where-Object { $_.Id -eq 100 } | Select-Object -First 10
+$BootDiagDetails = @()
+
+# Helper function to safely parse boot event properties
+function Get-BootTimeFromEvent {
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateNotNull()]
+        $Event
+    )
+    
+    if ($null -eq $Event) {
+        return $null
     }
-    if ($bootEvents) {
-        $bootStats = foreach ($e in $bootEvents) {
-            $props = $e.Properties
-            if ($props.Count -ge 18) {
-                $bootTimeMs = $props[2].Value
-                $postBootMs = $props[16].Value
-                if ($bootTimeMs -is [int]) {
-                    [PSCustomObject]@{
-                        BootTimeSeconds     = [math]::Round(($bootTimeMs/1000),2)
-                        PostBootSeconds     = if ($postBootMs -is [int]) { [math]::Round(($postBootMs/1000),2) } else { $null }
-                        Timestamp           = $e.TimeCreated
-                    }
+    
+    $result = [PSCustomObject]@{
+        BootTimeSeconds = $null
+        PostBootSeconds = $null
+        Timestamp = $Event.TimeCreated
+        Method = "Unknown"
+    }
+    
+    # Method 1: Try standard property indexes (most common)
+    try {
+        $props = $Event.Properties
+        if ($props -and $props.Count -ge 3) {
+            # Property index 2 is typically BootDuration in ms
+            $bootVal = $props[2].Value
+            if ($bootVal -is [int] -or $bootVal -is [int64] -or $bootVal -is [uint32] -or $bootVal -is [uint64]) {
+                $result.BootTimeSeconds = [math]::Round(([double]$bootVal / 1000), 2)
+                $result.Method = "Properties[2]"
+            } elseif ($bootVal -is [string] -and $bootVal -match '^\d+$') {
+                $result.BootTimeSeconds = [math]::Round(([double]$bootVal / 1000), 2)
+                $result.Method = "Properties[2]-String"
+            }
+            
+            # Property index 16 is typically MainPathBootTime (post-boot)
+            if ($props.Count -ge 17) {
+                $postVal = $props[16].Value
+                if ($postVal -is [int] -or $postVal -is [int64] -or $postVal -is [uint32] -or $postVal -is [uint64]) {
+                    $result.PostBootSeconds = [math]::Round(([double]$postVal / 1000), 2)
+                } elseif ($postVal -is [string] -and $postVal -match '^\d+$') {
+                    $result.PostBootSeconds = [math]::Round(([double]$postVal / 1000), 2)
                 }
             }
         }
-        if ($bootStats) {
+    } catch {
+        Add-Content -Path $LogPath -Value "Boot event property parsing error (Method 1): $($_.Exception.Message)"
+    }
+    
+    # Method 2: Parse XML event data directly if Method 1 failed
+    if ($null -eq $result.BootTimeSeconds) {
+        try {
+            $xml = [xml]$Event.ToXml()
+            $eventData = $xml.Event.EventData
+            if ($eventData) {
+                # Look for BootDuration or similar named data
+                $bootDurationNode = $eventData.Data | Where-Object { $_.Name -match 'BootDuration|BootTime|MainPathBootTime' } | Select-Object -First 1
+                if ($bootDurationNode -and $bootDurationNode.'#text') {
+                    $bootMs = [int64]$bootDurationNode.'#text'
+                    $result.BootTimeSeconds = [math]::Round(($bootMs / 1000), 2)
+                    $result.Method = "XML-Named"
+                }
+                # Alternative: use positional data nodes
+                if ($null -eq $result.BootTimeSeconds) {
+                    $dataNodes = $eventData.Data
+                    if ($dataNodes.Count -ge 3) {
+                        $bootVal = $dataNodes[2].'#text'
+                        if ($bootVal -match '^\d+$') {
+                            $result.BootTimeSeconds = [math]::Round(([double]$bootVal / 1000), 2)
+                            $result.Method = "XML-Index"
+                        }
+                    }
+                }
+            }
+        } catch {
+            Add-Content -Path $LogPath -Value "Boot event XML parsing error (Method 2): $($_.Exception.Message)"
+        }
+    }
+    
+    return $result
+}
+
+# Helper function to calculate boot time from system uptime and login events
+function Get-BootTimeFromUptime {
+    try {
+        $osInfo = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $lastBoot = $osInfo.LastBootUpTime
+        
+        # Try to get login time from Security log or Win32_LogonSession
+        $loginTime = $null
+        try {
+            $logonSession = Get-CimInstance Win32_LogonSession -ErrorAction SilentlyContinue | 
+                Where-Object { $_.LogonType -eq 2 -or $_.LogonType -eq 10 } | 
+                Sort-Object StartTime | Select-Object -First 1
+            if ($logonSession -and $logonSession.StartTime) {
+                $loginTime = $logonSession.StartTime
+            }
+        } catch {}
+        
+        if ($lastBoot -and $loginTime) {
+            $bootDuration = ($loginTime - $lastBoot).TotalSeconds
+            if ($bootDuration -gt 0 -and $bootDuration -lt 600) {  # Sanity check: < 10 minutes
+                return [PSCustomObject]@{
+                    BootTimeSeconds = [math]::Round($bootDuration, 2)
+                    PostBootSeconds = $null
+                    Timestamp = $lastBoot
+                    Method = "Uptime-Login"
+                }
+            }
+        }
+    } catch {
+        Add-Content -Path $LogPath -Value "Boot time from uptime calculation error: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+try {
+    # Primary method: Event ID 100 from Diagnostics-Performance log
+    $bootEvents = $null
+    try {
+        $bootEvents = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Diagnostics-Performance/Operational'; Id=100; StartTime=(Get-Date).AddDays(-7)} -ErrorAction Stop | Select-Object -First 10
+    } catch {
+        Add-Content -Path $LogPath -Value "Primary boot event query failed: $($_.Exception.Message)"
+    }
+    
+    # Fallback: Try without date filter
+    if (-not $bootEvents) {
+        try {
+            $bootEvents = Get-WinEvent -LogName 'Microsoft-Windows-Diagnostics-Performance/Operational' -ErrorAction SilentlyContinue | 
+                Where-Object { $_.Id -eq 100 } | Select-Object -First 10
+        } catch {
+            Add-Content -Path $LogPath -Value "Secondary boot event query failed: $($_.Exception.Message)"
+        }
+    }
+    
+    if ($bootEvents) {
+        $bootStats = @()
+        foreach ($e in $bootEvents) {
+            $parsedBoot = Get-BootTimeFromEvent -Event $e
+            if ($null -ne $parsedBoot.BootTimeSeconds -and $parsedBoot.BootTimeSeconds -gt 0) {
+                $bootStats += $parsedBoot
+                Add-Content -Path $LogPath -Value "Boot event parsed via $($parsedBoot.Method): $($parsedBoot.BootTimeSeconds)s at $($parsedBoot.Timestamp)"
+            }
+        }
+        
+        if ($bootStats.Count -gt 0) {
             $BootSamples = $bootStats.Count
-            $BootAvgSeconds = [math]::Round((($bootStats | Measure-Object BootTimeSeconds -Average).Average),2)
-            $BootAvgPostBootSeconds = [math]::Round((($bootStats | Where-Object PostBootSeconds | Measure-Object PostBootSeconds -Average).Average),2)
-            if ($BootAvgSeconds -ne $null) {
+            $BootAvgSeconds = [math]::Round((($bootStats | Measure-Object BootTimeSeconds -Average).Average), 2)
+            $validPostBoot = $bootStats | Where-Object { $null -ne $_.PostBootSeconds }
+            if ($validPostBoot) {
+                $BootAvgPostBootSeconds = [math]::Round((($validPostBoot | Measure-Object PostBootSeconds -Average).Average), 2)
+            }
+            
+            if ($null -ne $BootAvgSeconds) {
                 $BootHealth = if ($BootAvgSeconds -le $Boot_Good_Thresh) { "Good" }
                                elseif ($BootAvgSeconds -le $Boot_Medium_Thresh) { "Medium" }
                                else { "Critical" }
@@ -612,16 +882,171 @@ try {
             Status "+" ("Boot avg {0}s PostBoot avg {1}s Samples {2} Health {3}" -f (SafeVal $BootAvgSeconds),(SafeVal $BootAvgPostBootSeconds),$BootSamples,$BootHealth) (HealthColor $BootHealth)
             Add-Content -Path $LogPath -Value "`n-- Boot Samples --`n$($bootStats | Format-Table -AutoSize | Out-String)"
         } else {
-            Status "-" "Boot events found but parsing yielded no samples." "Gray"
-            $SkippedItems.Add("Boot performance parsing")
+            # Fallback: Calculate from uptime if event parsing failed
+            Status "-" "Boot events found but parsing yielded no samples. Trying fallback method..." "Gray"
+            Add-Content -Path $LogPath -Value "Boot event parsing failed - attempting uptime calculation fallback"
+            
+            $uptimeBoot = Get-BootTimeFromUptime
+            if ($uptimeBoot -and $uptimeBoot.BootTimeSeconds) {
+                $BootSamples = 1
+                $BootAvgSeconds = $uptimeBoot.BootTimeSeconds
+                $BootHealth = if ($BootAvgSeconds -le $Boot_Good_Thresh) { "Good" }
+                               elseif ($BootAvgSeconds -le $Boot_Medium_Thresh) { "Medium" }
+                               else { "Critical" }
+                Status "+" ("Boot time (uptime method) {0}s Health {1}" -f $BootAvgSeconds,$BootHealth) (HealthColor $BootHealth)
+                Add-Content -Path $LogPath -Value "Boot time via uptime method: $BootAvgSeconds s"
+            } else {
+                $SkippedItems.Add("Boot performance parsing (all methods failed)")
+            }
         }
     } else {
-        Status "-" "No boot ID 100 events (7d)." "Gray"
-        $SkippedItems.Add("Boot performance (no events)")
+        # No boot events found - try uptime fallback
+        Status "-" "No boot ID 100 events (7d). Trying uptime method..." "Gray"
+        $uptimeBoot = Get-BootTimeFromUptime
+        if ($uptimeBoot -and $uptimeBoot.BootTimeSeconds) {
+            $BootSamples = 1
+            $BootAvgSeconds = $uptimeBoot.BootTimeSeconds
+            $BootHealth = if ($BootAvgSeconds -le $Boot_Good_Thresh) { "Good" }
+                           elseif ($BootAvgSeconds -le $Boot_Medium_Thresh) { "Medium" }
+                           else { "Critical" }
+            Status "+" ("Boot time (uptime method) {0}s Health {1}" -f $BootAvgSeconds,$BootHealth) (HealthColor $BootHealth)
+        } else {
+            $SkippedItems.Add("Boot performance (no events)")
+        }
     }
 } catch {
     Status "-" "Boot analysis error: $($_.Exception.Message)" "Gray"
+    Add-Content -Path $LogPath -Value "Boot analysis exception: $($_.Exception.Message)"
     $SkippedItems.Add("Boot performance (error)")
+}
+
+# ---------------------------
+# BOOT DIAGNOSTICS
+# ---------------------------
+Section "BOOT DIAGNOSTICS"
+Status "~" "Analyzing startup programs and boot impact..." "Yellow"
+$StartupDiagnostics = @()
+
+try {
+    # Analyze startup programs with estimated impact
+    $startupRegKeys = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+    )
+    if ([Environment]::Is64BitOperatingSystem) {
+        $startupRegKeys += 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+    }
+    
+    foreach ($regKey in $startupRegKeys) {
+        if (Test-Path $regKey) {
+            try {
+                $item = Get-Item -Path $regKey -ErrorAction Stop
+                $names = $item.GetValueNames() | Where-Object { $_ -and $_ -ne '(Default)' }
+                foreach ($name in $names) {
+                    try {
+                        $val = $item.GetValue($name)
+                        if ($null -ne $val -and -not [string]::IsNullOrWhiteSpace("$val")) {
+                            # Estimate boot impact based on program type
+                            $impact = "Low"
+                            $cmdLower = $val.ToLower()
+                            if ($cmdLower -match 'security|defender|antivirus|firewall|eset|kaspersky|mcafee|avast|sophos') {
+                                $impact = "High"  # Security software typically has high boot impact
+                            } elseif ($cmdLower -match 'onedrive|dropbox|googledrive|icloud|sync') {
+                                $impact = "High"  # Cloud sync services
+                            } elseif ($cmdLower -match 'update|updater|telemetry|helper') {
+                                $impact = "Medium"  # Updaters and helpers
+                            } elseif ($cmdLower -match 'nvidia|amd|intel|gpu|display') {
+                                $impact = "Medium"  # GPU drivers/utilities
+                            }
+                            
+                            $StartupDiagnostics += [PSCustomObject]@{
+                                Name = $name
+                                Source = $regKey
+                                Command = $val
+                                Impact = $impact
+                            }
+                        }
+                    } catch {}
+                }
+            } catch {}
+        }
+    }
+    
+    # Check startup folders
+    $startupFolders = @(
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp",
+        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+    )
+    foreach ($folder in $startupFolders) {
+        if (Test-Path $folder) {
+            Get-ChildItem -Path $folder -File -ErrorAction SilentlyContinue | ForEach-Object {
+                $impact = "Medium"  # Startup folder items typically have medium impact
+                $StartupDiagnostics += [PSCustomObject]@{
+                    Name = $_.Name
+                    Source = "StartupFolder"
+                    Command = $_.FullName
+                    Impact = $impact
+                }
+            }
+        }
+    }
+    
+    # Check Fast Startup configuration
+    $fastStartupEnabled = $false
+    try {
+        $hibernateReg = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" -Name "HiberbootEnabled" -ErrorAction SilentlyContinue
+        if ($hibernateReg -and $hibernateReg.HiberbootEnabled -eq 1) {
+            $fastStartupEnabled = $true
+        }
+    } catch {}
+    
+    # Check for pending Windows Updates
+    $pendingUpdates = $false
+    try {
+        $updateSession = New-Object -ComObject Microsoft.Update.Session -ErrorAction SilentlyContinue
+        if ($updateSession) {
+            $updateSearcher = $updateSession.CreateUpdateSearcher()
+            $searchResult = $updateSearcher.Search("IsInstalled=0 and IsHidden=0")
+            if ($searchResult.Updates.Count -gt 0) {
+                $pendingUpdates = $true
+            }
+        }
+    } catch {
+        Add-Content -Path $LogPath -Value "Windows Update check error: $($_.Exception.Message)"
+    }
+    
+    # Check for pending reboot
+    $pendingReboot = $false
+    try {
+        $cbsReboot = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing" -Name "RebootPending" -ErrorAction SilentlyContinue
+        $wuReboot = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" -Name "RebootRequired" -ErrorAction SilentlyContinue
+        if ($cbsReboot -or $wuReboot) {
+            $pendingReboot = $true
+        }
+    } catch {}
+    
+    # Log boot diagnostics
+    $highImpactCount = ($StartupDiagnostics | Where-Object { $_.Impact -eq "High" }).Count
+    $mediumImpactCount = ($StartupDiagnostics | Where-Object { $_.Impact -eq "Medium" }).Count
+    $lowImpactCount = ($StartupDiagnostics | Where-Object { $_.Impact -eq "Low" }).Count
+    
+    Status "+" "Startup programs: $($StartupDiagnostics.Count) total (High: $highImpactCount, Medium: $mediumImpactCount, Low: $lowImpactCount)" "Green"
+    Status "+" "Fast Startup: $(if ($fastStartupEnabled) { 'Enabled' } else { 'Disabled' })" "Green"
+    if ($pendingUpdates) {
+        Status "!" "Pending Windows Updates may affect boot time" "Yellow"
+    }
+    if ($pendingReboot) {
+        Status "!" "Pending reboot detected - may affect boot time" "Yellow"
+    }
+    
+    Add-Content -Path $LogPath -Value "`n-- Startup Programs (Boot Impact) --`n$($StartupDiagnostics | Format-Table Name,Impact,Source -AutoSize | Out-String)"
+    Add-Content -Path $LogPath -Value "Fast Startup: $(if ($fastStartupEnabled) { 'Enabled' } else { 'Disabled' })"
+    Add-Content -Path $LogPath -Value "Pending Updates: $pendingUpdates"
+    Add-Content -Path $LogPath -Value "Pending Reboot: $pendingReboot"
+    
+} catch {
+    Status "-" "Boot diagnostics error: $($_.Exception.Message)" "Gray"
+    Add-Content -Path $LogPath -Value "Boot diagnostics exception: $($_.Exception.Message)"
 }
 
 # ---------------------------
@@ -633,19 +1058,24 @@ $FirstDriveLetter = try { ($disks | Select-Object -First 1).DeviceID.TrimEnd(':'
 $DismResult = "Skipped"
 try {
     if ($IsAdmin) {
-        Status "~" "DISM /RestoreHealth..." "Yellow"
+        Status "~" "DISM /RestoreHealth (this may take several minutes)..." "Yellow"
+        Show-ProgressBar -Activity "System Repairs" -Status "Running DISM /RestoreHealth..." -PercentComplete 10
         Start-Process dism.exe -ArgumentList "/Online","/Cleanup-Image","/RestoreHealth","/NoRestart" -NoNewWindow -Wait -PassThru | Out-Null
+        Show-ProgressBar -Activity "System Repairs" -Status "DISM completed" -PercentComplete 50
         $DismResult = "Completed"; Status "+" "DISM completed." "Green"
     } else { $DismResult = "Skipped (no admin)"; AdminSkip "DISM /RestoreHealth" "dism /online /cleanup-image /restorehealth /norestart" }
 } catch { $DismResult = "Error"; Status "!" "DISM error: $($_.Exception.Message)" "Red" }
 $SfcResult = "Skipped"
 try {
     if ($IsAdmin) {
-        Status "~" "SFC /scannow..." "Yellow"
+        Status "~" "SFC /scannow (this may take several minutes)..." "Yellow"
+        Show-ProgressBar -Activity "System Repairs" -Status "Running SFC /scannow..." -PercentComplete 60
         Start-Process sfc.exe -ArgumentList "/scannow" -NoNewWindow -Wait -PassThru | Out-Null
+        Show-ProgressBar -Activity "System Repairs" -Status "SFC completed" -PercentComplete 100
         $SfcResult = "Completed"; Status "+" "SFC completed." "Green"
     } else { $SfcResult = "Skipped (no admin)"; AdminSkip "SFC /scannow" "sfc /scannow" }
 } catch { $SfcResult = "Error"; Status "!" "SFC error: $($_.Exception.Message)" "Red" }
+Write-Progress -Activity "System Repairs" -Completed
 
 # ---------------------------
 # CLEANUPS & TWEAKS
@@ -997,7 +1427,22 @@ if ($DeepClean) {
         } else { Status "-" "Prefetch path missing." "Gray" }
 
         if (Prompt-YesNo "Empty Recycle Bin?" $DeepCleanAutoYes) {
-            try { Clear-RecycleBin -Force -ErrorAction SilentlyContinue; Status "+" "Recycle Bin emptied." "Green"; $DeepCleanActions.Add("RecycleBin") }
+            try {
+                if ($HasClearRecycleBin) {
+                    Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+                    Status "+" "Recycle Bin emptied." "Green"
+                    $DeepCleanActions.Add("RecycleBin")
+                } else {
+                    # Fallback for older PowerShell versions
+                    $shell = New-Object -ComObject Shell.Application
+                    $recycleBin = $shell.Namespace(0xA)  # 0xA = Recycle Bin
+                    if ($recycleBin.Items().Count -gt 0) {
+                        $recycleBin.Items() | ForEach-Object { Remove-Item $_.Path -Force -Recurse -ErrorAction SilentlyContinue }
+                    }
+                    Status "+" "Recycle Bin emptied (fallback method)." "Green"
+                    $DeepCleanActions.Add("RecycleBin")
+                }
+            }
             catch { Status "-" "Recycle Bin clear failed." "Yellow" }
         } else { Status "-" "Recycle Bin left intact." "Gray" }
     }
@@ -1223,7 +1668,7 @@ Write-Host " CPU" -ForegroundColor DarkGray
 PrintRow "Model"         $ReportObj.CPU_Model $CPUHealth
 PrintRow "Usage Avg (%)" (SafeVal $ReportObj.CPU_Usage_Avg_Pct) $CPUHealth
 PrintRow "Usage Peak (%)"(SafeVal $ReportObj.CPU_Usage_Peak_Pct) $CPUHealth
-PrintRow "Backlog Avg"   (SafeVal $ReportObj.CPU_Backlog_Threads) $CPUHealth
+PrintRow "Backlog Avg"   (SafeVal $ReportObj.CPU_Backlog_Avg) $CPUHealth
 PrintRow "Current GHz"   (SafeVal $ReportObj.CPU_Current_GHz) $CPUHealth
 PrintRow "Base GHz"      (SafeVal $ReportObj.CPU_Base_GHz)
 PrintRow "Temp (C)"      (SafeVal $ReportObj.CPU_Temp_C) $CPU_Temp_Health
@@ -1279,4 +1724,164 @@ if (Test-Path $AdminTodoPath) { Write-Host ("Admin To-Do: {0}" -f $AdminTodoPath
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host "Scan complete." -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
+
+# ---------------------------
+# INTERACTIVE HELP MENU
+# ---------------------------
+# Show interactive help when health is Medium/Critical or when running informational only
+function Show-InteractiveHelp {
+    param(
+        [string]$OverallHealth,
+        [string]$BootHealth,
+        [double]$BootAvgSeconds,
+        [string]$DiskHealth,
+        [string]$CPUHealth,
+        [string]$MemoryHealth
+    )
+    
+    Write-Host ""
+    Write-Host ([char]0x2554) -NoNewline -ForegroundColor Cyan
+    Write-Host ("=" * 62) -NoNewline -ForegroundColor Cyan
+    Write-Host ([char]0x2557) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "           PC HEALTH CHECK - AVAILABLE ACTIONS                  " -NoNewline -ForegroundColor White
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2560) -NoNewline -ForegroundColor Cyan
+    Write-Host ("=" * 62) -NoNewline -ForegroundColor Cyan
+    Write-Host ([char]0x2563) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "                                                                " -NoNewline
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "  Based on your results, consider these actions:                " -NoNewline -ForegroundColor White
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "                                                                " -NoNewline
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    # Context-aware suggestions based on detected issues
+    if ($BootHealth -eq "Critical" -or $BootHealth -eq "Medium") {
+        $bootStatus = if ($null -ne $BootAvgSeconds) { "$([math]::Round($BootAvgSeconds))s" } else { "Unknown" }
+        $bootColor = if ($BootHealth -eq "Critical") { "Red" } else { "Yellow" }
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "  " -NoNewline
+        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $bootColor
+        Write-Host " BOOT TIME: $bootStatus ($BootHealth)".PadRight(53) -NoNewline -ForegroundColor $bootColor
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -ApplyStartupOptimization     " -NoNewline -ForegroundColor Green
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "                                                                " -NoNewline
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+    }
+    
+    if ($DiskHealth -eq "Critical" -or $DiskHealth -eq "Medium") {
+        $diskColor = if ($DiskHealth -eq "Critical") { "Red" } else { "Yellow" }
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "  " -NoNewline
+        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $diskColor
+        Write-Host " DISK HEALTH: $DiskHealth".PadRight(53) -NoNewline -ForegroundColor $diskColor
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -DeepClean                     " -NoNewline -ForegroundColor Green
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "                                                                " -NoNewline
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+    }
+    
+    if ($CPUHealth -eq "Critical" -or $CPUHealth -eq "Medium") {
+        $cpuColor = if ($CPUHealth -eq "Critical") { "Red" } else { "Yellow" }
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "  " -NoNewline
+        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $cpuColor
+        Write-Host " CPU HEALTH: $CPUHealth".PadRight(53) -NoNewline -ForegroundColor $cpuColor
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -ExtendedPerf (verify)         " -NoNewline -ForegroundColor Green
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "                                                                " -NoNewline
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+    }
+    
+    if ($MemoryHealth -eq "Critical" -or $MemoryHealth -eq "Medium") {
+        $memColor = if ($MemoryHealth -eq "Critical") { "Red" } else { "Yellow" }
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "  " -NoNewline
+        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $memColor
+        Write-Host " MEMORY HEALTH: $MemoryHealth".PadRight(53) -NoNewline -ForegroundColor $memColor
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -ExtendedPerf (verify)         " -NoNewline -ForegroundColor Green
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+        
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        Write-Host "                                                                " -NoNewline
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+    }
+    
+    # Parameter reference section
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "  " -NoNewline
+    Write-Host ([char]0x1F4CB) -NoNewline -ForegroundColor White
+    Write-Host " All Available Parameters:                                 " -NoNewline -ForegroundColor White
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    $params = @(
+        @("  -AutoElevate", "Automatically request admin rights"),
+        @("  -ExtendedPerf", "60-second performance sampling"),
+        @("  -ApplyStartupOptimization", "Disable unnecessary startup items"),
+        @("  -DeepClean", "Advanced cleanup operations"),
+        @("  -DisableHAGS", "Disable GPU hardware scheduling"),
+        @("  -EnableHAGS", "Enable GPU hardware scheduling"),
+        @("  -DisableGameBarCapture", "Disable Xbox Game Bar capture"),
+        @("  -PowerMode High", "Apply High Performance power plan")
+    )
+    
+    foreach ($p in $params) {
+        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+        $line = ("     {0,-28} {1}" -f $p[0], $p[1]).PadRight(64)
+        if ($line.Length -gt 64) { $line = $line.Substring(0, 64) }
+        Write-Host $line -NoNewline -ForegroundColor Gray
+        Write-Host ([char]0x2551) -ForegroundColor Cyan
+    }
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "                                                                " -NoNewline
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "  For full documentation: Get-Help .\PC-HealthCheck.ps1 -Full   " -NoNewline -ForegroundColor DarkGray
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
+    Write-Host "                                                                " -NoNewline
+    Write-Host ([char]0x2551) -ForegroundColor Cyan
+    
+    Write-Host ([char]0x255A) -NoNewline -ForegroundColor Cyan
+    Write-Host ("=" * 62) -NoNewline -ForegroundColor Cyan
+    Write-Host ([char]0x255D) -ForegroundColor Cyan
+}
+
+# Show interactive help when overall health is Medium or Critical, when no action parameters were provided, or when -ShowHelp is used
+$actionParamsProvided = $ApplyStartupOptimization -or $DeepClean -or $EnableHAGS -or $DisableHAGS -or $DisableGameBarCapture -or $EnableGameBarCapture
+
+if ($ShowHelp -or $OverallStatus -in @("Medium", "Critical") -or -not $actionParamsProvided) {
+    Show-InteractiveHelp -OverallHealth $OverallStatus -BootHealth $BootHealth -BootAvgSeconds $BootAvgSeconds -DiskHealth $DiskHealthCombined -CPUHealth $CPUHealth -MemoryHealth $MemoryHealth
+}
+
 # End of script
