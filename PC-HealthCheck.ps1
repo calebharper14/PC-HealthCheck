@@ -203,6 +203,25 @@ function Show-ProgressBar {
         $progressParams['SecondsRemaining'] = $SecondsRemaining
     }
     Write-Progress @progressParams
+    function Get-PSGlyph {
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet('clipboard','check','arrow','triangle','warning','bullet')]
+        [string]$Id
+    )
+    
+    # Use literal emoji only on PS 7+, otherwise provide BMP-safe fallback
+    $isPS7Plus = $PSVersionTable.PSVersion.Major -ge 7
+    switch ($Id) {
+        'clipboard' { if ($isPS7Plus) { '📋' } else { [char]0x25A1 } } # □ on PS 5.1
+        'check'     { [char]0x2713 }    # ✓
+        'arrow'     { [char]0x2192 }    # →
+        'triangle'  { [char]0x25BA }    # ►
+        'warning'   { [char]0x26A0 }    # ⚠
+        'bullet'    { [char]0x2022 }    # •
+        default     { ' ' }
+    }
+}
 }
 
 # Helper: collect raw samples for sustained logic with progress
