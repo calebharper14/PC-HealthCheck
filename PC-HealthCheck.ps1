@@ -209,7 +209,7 @@ function Show-ProgressBar {
         [ValidateSet('clipboard','check','arrow','triangle','warning','bullet')]
         [string]$Id
     )
-    
+
     # Use literal emoji only on PS 7+, otherwise provide BMP-safe fallback
     $isPS7Plus = $PSVersionTable.PSVersion.Major -ge 7
     switch ($Id) {
@@ -1856,7 +1856,7 @@ function Show-InteractiveHelp {
     # Parameter reference section
     Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
     Write-Host "  " -NoNewline
-    Write-Host ([char]0x1F4CB) -NoNewline -ForegroundColor White
+    Write-Host (Get-PSGlyph -Id 'clipboard') -NoNewline -ForegroundColor White
     Write-Host " All Available Parameters:                                 " -NoNewline -ForegroundColor White
     Write-Host ([char]0x2551) -ForegroundColor Cyan
     
