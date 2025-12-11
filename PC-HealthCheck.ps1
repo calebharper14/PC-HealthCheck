@@ -271,6 +271,68 @@ function Classify-Sustained {
     return $avg,$peak,$medFrac,$health
 }
 
+function Render-AvailableActions {
+    param(
+        [double]$BootAvgSeconds,
+        [string]$BootHealth,
+        [bool]$PendingUpdates,
+        [bool]$FastStartupEnabled,
+        [array]$StartupDiagnostics
+    )
+
+    # Compact width but wide enough to avoid clipping; adjust 72–80 if needed
+    $width = 76
+    $inner = $width - 4
+    $hLine = New-Object string('═', $inner)
+    $top   = "╔{0}╗" -f $hLine
+    $bot   = "╚{0}╝" -f $hLine
+
+    function BoxLine([string]$text, [ConsoleColor]$color='White') {
+        if ($null -eq $text) { $text = '' }
+        $t = $text
+        if ($t.Length -gt $inner) { $t = $t.Substring(0, $inner) }
+        $pad = New-Object string(' ', $inner - $t.Length)
+        Write-Host ("║ {0}{1} ║" -f $t, $pad) -ForegroundColor $color
+    }
+
+    Write-Host $top -ForegroundColor Cyan
+    BoxLine ("PC HEALTH CHECK - AVAILABLE ACTIONS") 'White'
+    BoxLine "" 'White'
+
+    # Boot status
+    $glyph = Get-PSGlyph -Id 'warning'
+    $bootDisplay = if ($BootAvgSeconds) {
+        "{0} BOOT TIME: {1}s ({2})" -f $glyph, [math]::Round($BootAvgSeconds,2), $BootHealth
+    } else {
+        "{0} BOOT TIME: N/A ({1})" -f $glyph, ($BootHealth ?? 'Unknown')
+    }
+    BoxLine $bootDisplay 'Red'
+
+    # Recommendation
+    $arrow = Get-PSGlyph -Id 'arrow'
+    BoxLine ("{0} Run: .\PC-HealthCheck.ps1 -ApplyStartupOptimization" -f $arrow) 'Yellow'
+    BoxLine "" 'White'
+
+    # Fast Startup and Pending Updates
+    BoxLine ("Fast Startup: {0}"  -f (if ($FastStartupEnabled) {'Enabled'} else {'Disabled'})) 'White'
+    BoxLine ("Pending Updates: {0}" -f (if ($PendingUpdates) {'Yes'} else {'No'})) 'White'
+    BoxLine "" 'White'
+
+    # Startup summary
+    if ($StartupDiagnostics -and $StartupDiagnostics.Count -gt 0) {
+        $high = ($StartupDiagnostics | Where-Object Impact -eq 'High').Count
+        $med  = ($StartupDiagnostics | Where-Object Impact -eq 'Medium').Count
+        $low  = ($StartupDiagnostics | Where-Object Impact -eq 'Low').Count
+        BoxLine ("Startup Programs: {0} total (High: {1}, Medium: {2}, Low: {3})" -f $StartupDiagnostics.Count,$high,$med,$low) 'White'
+    } else {
+        BoxLine ("Startup Programs: N/A") 'White'
+    }
+
+    BoxLine "" 'White'
+    BoxLine ("Available parameters: -ApplyStartupOptimization  -DeepClean  -DisableHAGS  -EnableHAGS  -DisableGameBarCapture  -PowerMode High") 'White'
+    Write-Host $bot -ForegroundColor Cyan
+}
+
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
@@ -1745,162 +1807,24 @@ Write-Host "Scan complete." -ForegroundColor Cyan
 Write-Host "=============================================" -ForegroundColor Cyan
 
 # ---------------------------
-# INTERACTIVE HELP MENU
+# AVAILABLE ACTIONS PANEL
 # ---------------------------
-# Show interactive help when health is Medium/Critical or when running informational only
-function Show-InteractiveHelp {
-    param(
-        [string]$OverallHealth,
-        [string]$BootHealth,
-        [double]$BootAvgSeconds,
-        [string]$DiskHealth,
-        [string]$CPUHealth,
-        [string]$MemoryHealth
-    )
-    
-    Write-Host ""
-    Write-Host ([char]0x2554) -NoNewline -ForegroundColor Cyan
-    Write-Host ("=" * 62) -NoNewline -ForegroundColor Cyan
-    Write-Host ([char]0x2557) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "           PC HEALTH CHECK - AVAILABLE ACTIONS                  " -NoNewline -ForegroundColor White
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2560) -NoNewline -ForegroundColor Cyan
-    Write-Host ("=" * 62) -NoNewline -ForegroundColor Cyan
-    Write-Host ([char]0x2563) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "                                                                " -NoNewline
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "  Based on your results, consider these actions:                " -NoNewline -ForegroundColor White
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "                                                                " -NoNewline
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    # Context-aware suggestions based on detected issues
-    if ($BootHealth -eq "Critical" -or $BootHealth -eq "Medium") {
-        $bootStatus = if ($null -ne $BootAvgSeconds) { "$([math]::Round($BootAvgSeconds))s" } else { "Unknown" }
-        $bootColor = if ($BootHealth -eq "Critical") { "Red" } else { "Yellow" }
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "  " -NoNewline
-        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $bootColor
-        Write-Host " BOOT TIME: $bootStatus ($BootHealth)".PadRight(53) -NoNewline -ForegroundColor $bootColor
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -ApplyStartupOptimization     " -NoNewline -ForegroundColor Green
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "                                                                " -NoNewline
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-    }
-    
-    if ($DiskHealth -eq "Critical" -or $DiskHealth -eq "Medium") {
-        $diskColor = if ($DiskHealth -eq "Critical") { "Red" } else { "Yellow" }
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "  " -NoNewline
-        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $diskColor
-        Write-Host " DISK HEALTH: $DiskHealth".PadRight(53) -NoNewline -ForegroundColor $diskColor
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -DeepClean                     " -NoNewline -ForegroundColor Green
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "                                                                " -NoNewline
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-    }
-    
-    if ($CPUHealth -eq "Critical" -or $CPUHealth -eq "Medium") {
-        $cpuColor = if ($CPUHealth -eq "Critical") { "Red" } else { "Yellow" }
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "  " -NoNewline
-        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $cpuColor
-        Write-Host " CPU HEALTH: $CPUHealth".PadRight(53) -NoNewline -ForegroundColor $cpuColor
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -ExtendedPerf (verify)         " -NoNewline -ForegroundColor Green
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "                                                                " -NoNewline
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-    }
-    
-    if ($MemoryHealth -eq "Critical" -or $MemoryHealth -eq "Medium") {
-        $memColor = if ($MemoryHealth -eq "Critical") { "Red" } else { "Yellow" }
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "  " -NoNewline
-        Write-Host ([char]0x26A0) -NoNewline -ForegroundColor $memColor
-        Write-Host " MEMORY HEALTH: $MemoryHealth".PadRight(53) -NoNewline -ForegroundColor $memColor
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "    -> Run: .\PC-HealthCheck.ps1 -ExtendedPerf (verify)         " -NoNewline -ForegroundColor Green
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-        
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        Write-Host "                                                                " -NoNewline
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-    }
-    
-    # Parameter reference section
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "  " -NoNewline
-    Write-Host (Get-PSGlyph -Id 'clipboard') -NoNewline -ForegroundColor White
-    Write-Host " All Available Parameters:                                 " -NoNewline -ForegroundColor White
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    $params = @(
-        @("  -AutoElevate", "Automatically request admin rights"),
-        @("  -ExtendedPerf", "60-second performance sampling"),
-        @("  -ApplyStartupOptimization", "Disable unnecessary startup items"),
-        @("  -DeepClean", "Advanced cleanup operations"),
-        @("  -DisableHAGS", "Disable GPU hardware scheduling"),
-        @("  -EnableHAGS", "Enable GPU hardware scheduling"),
-        @("  -DisableGameBarCapture", "Disable Xbox Game Bar capture"),
-        @("  -PowerMode High", "Apply High Performance power plan")
-    )
-    
-    foreach ($p in $params) {
-        Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-        $line = ("     {0,-28} {1}" -f $p[0], $p[1]).PadRight(64)
-        if ($line.Length -gt 64) { $line = $line.Substring(0, 64) }
-        Write-Host $line -NoNewline -ForegroundColor Gray
-        Write-Host ([char]0x2551) -ForegroundColor Cyan
-    }
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "                                                                " -NoNewline
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "  For full documentation: Get-Help .\PC-HealthCheck.ps1 -Full   " -NoNewline -ForegroundColor DarkGray
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x2551) -NoNewline -ForegroundColor Cyan
-    Write-Host "                                                                " -NoNewline
-    Write-Host ([char]0x2551) -ForegroundColor Cyan
-    
-    Write-Host ([char]0x255A) -NoNewline -ForegroundColor Cyan
-    Write-Host ("=" * 62) -NoNewline -ForegroundColor Cyan
-    Write-Host ([char]0x255D) -ForegroundColor Cyan
-}
+# Show panel when health is Medium/Critical, when -ShowHelp is used,
+# or when no action parameters were provided
 
-# Show interactive help when overall health is Medium or Critical, when no action parameters were provided, or when -ShowHelp is used
 $actionParamsProvided = $ApplyStartupOptimization -or $DeepClean -or $EnableHAGS -or $DisableHAGS -or $DisableGameBarCapture -or $EnableGameBarCapture
 
-if ($ShowHelp -or $OverallStatus -in @("Medium", "Critical") -or -not $actionParamsProvided) {
-    Show-InteractiveHelp -OverallHealth $OverallStatus -BootHealth $BootHealth -BootAvgSeconds $BootAvgSeconds -DiskHealth $DiskHealthCombined -CPUHealth $CPUHealth -MemoryHealth $MemoryHealth
+if ($ShowHelp -or $OverallStatus -in @("Medium","Critical") -or -not $actionParamsProvided) {
+    # Ensure defaults (avoid nulls)
+    if ($null -eq $PendingUpdates) { $PendingUpdates = $false }
+    if ($null -eq $fastStartupEnabled) { $fastStartupEnabled = $false }
+    if (-not $StartupDiagnostics) { $StartupDiagnostics = @() }
+
+    Render-AvailableActions -BootAvgSeconds $BootAvgSeconds `
+                            -BootHealth $BootHealth `
+                            -PendingUpdates $PendingUpdates `
+                            -FastStartupEnabled $fastStartupEnabled `
+                            -StartupDiagnostics $StartupDiagnostics
 }
 
 # End of script
